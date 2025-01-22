@@ -5,7 +5,8 @@ use super::{csv::{load::{csv_load, handle_csv_error}, model::PreScholar}, schola
 
 pub struct App {
     pub pre_scholars: Vec<PreScholar>,
-    pub scholars: Vec<Scholar>
+    pub scholars: Vec<Scholar>,
+    pub thread_count: usize,
 }
 
 impl Default for App {
@@ -17,7 +18,8 @@ impl Default for App {
 
         Self {
             pre_scholars,
-            scholars: Default::default()
+            scholars: Default::default(),
+            thread_count: 10,
         }
     }
 }
