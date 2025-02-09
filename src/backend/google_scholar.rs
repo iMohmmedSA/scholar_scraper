@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::io;
 use std::sync::Arc;
 
-use reqwest::{Client, Error, StatusCode};
+use reqwest::Client;
 use scraper::{ElementRef, Html, Selector};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::Semaphore;
 use tokio::task::{self, JoinHandle};
+use tracing::{info, error};
+
+use crate::prelude::*;
 
 use crate::backend::scholar_model::Scholar;
 
@@ -14,6 +16,7 @@ use super::app::App;
 use super::scholar_model::Publication;
 
 pub async fn process(app: &mut App) {
+    info!("Start processing list");
     let semaphore = Arc::new(Semaphore::new(app.thread_count));
 
     let tasks: Vec<JoinHandle<()>> = app
@@ -22,9 +25,14 @@ pub async fn process(app: &mut App) {
         .into_iter()
         .map(|task| {
             let semaphore = semaphore.clone();
+            let scholar_list = app.scholars.clone();
             task::spawn(async move {
                 if let Ok(_permit) = semaphore.acquire().await {
-                    extract(task.google_id).await;
+                    let scholar = extract(task.google_id).await.ok();
+                    
+                    if let Some(scholar) = scholar {
+                        App::add_scholar(scholar_list.clone(), scholar).await;
+                    }
                 } else {
                     eprintln!("Failed to acquire semaphore permit.");
                 }
@@ -35,19 +43,21 @@ pub async fn process(app: &mut App) {
     for task in tasks {
         let _ = task.await;
     }
+
+    println!("Scholar List: {:?}", app.scholars.lock().await.len())
 }
 
-async fn extract(id: String) {
+async fn extract(id: String) -> Result<Scholar> {
     println!("Processing: {id}");
 
     let result = match fetch(&id).await {
         Ok(o) => o,
-        Err(_) => todo!("Fix the extract"),
+        Err(err) => {return Err(err);},
     };
 
     let publications = match process_publication(&id).await {
         Ok(o) => o,
-        Err(_) => todo!(),
+        Err(err) => {return Err(err);},
     };
     let document_count = publications.len();
 
@@ -59,7 +69,7 @@ async fn extract(id: String) {
         extract_citations_table(&html);
 
     let scholar: Scholar = Scholar::new(
-        id,
+        id.clone(),
         name,
         affiliation,
         document_count,
@@ -72,7 +82,10 @@ async fn extract(id: String) {
         publications
     );
 
-    println!("{:?}", scholar);
+    let info = format!("Extracting scholar data with id:{:?} successed", id);
+    info!(info);
+    println!("{}", info);
+    Ok(scholar)
 }
 
 fn extract_content(html: &Html, selecter: &str) -> String {
@@ -90,7 +103,7 @@ fn extract_content(html: &Html, selecter: &str) -> String {
 }
 
 fn extract_element(row: &scraper::ElementRef, selector: &str) -> String {
-    let selector = match Selector::parse(selector) {
+    let selector: Selector = match Selector::parse(selector) {
         Ok(s) => s,
         Err(_) => return String::from("Unknown"),
     };
@@ -153,36 +166,30 @@ fn extract_citations_table(html: &Html) -> (String, String, String, String, Stri
     )
 }
 
-async fn process_publication(id: &String) -> Result<Vec<Publication>, reqwest::Error> {
+async fn process_publication(id: &String) -> Result<Vec<Publication>> {
     let mut start_at: usize = 0;
     let mut publication: Vec<Publication> = vec![];
+
+    let row_selector = Selector::parse("tr").expect("I made mistake at process_publication");
+
     loop {
 
         let mut result = match fetch_publication(id, start_at).await {
             Ok(o) => o,
-            Err(_) => todo!("Failed to fetch_publication"),
+            Err(_) => {
+                println!("fetch_publication failed for {id}");
+                return Err(Error::FailedProcess);
+            },
         };
 
         result = format!("<table>{result}</table>");
 
         let html = Html::parse_document(&result);
 
-        let row_selector = Selector::parse("tr");
-        let row_selector = match row_selector {
-            Ok(s) => s,
-            Err(_) => {
-                todo!("process_publication - row_selector")
-            }
-        };
-
         let mut temp_pub: Vec<Publication> = vec![];
         
         for row in html.select(&row_selector) {
             let title = extract_element(&row, "td.gsc_a_t a.gsc_a_at");
-
-            // Not now
-            // let authors = extract_element(&row, "td.gsc_a_t div.gs_gray:nth-of-type(1)");
-            // println!("Authors: {}", authors);
 
             let journal = extract_element(&row, "td.gsc_a_t div.gs_gray:nth-of-type(2)");
 
@@ -205,16 +212,32 @@ async fn process_publication(id: &String) -> Result<Vec<Publication>, reqwest::E
     Ok(publication)
 }
 
-// TODO: what happen if it failed? should i note that it failed? drop the scholar?
-async fn fetch(id: &String) -> Result<String, reqwest::Error> {
+async fn fetch(id: &String) -> Result<String> {
     let url = format!("https://scholar.google.com/citations?user={id}&hl=en");
     let client = Client::new();
-    let response = client.get(url).send().await?;
-    response.text().await.map_err(|e| e.into())
+    let response = match client.get(&url).send().await {
+        Ok(ok) => ok,
+        Err(_) => {
+            error!("{}", Error::FailedFetch(url.clone()));
+            return Err(Error::FailedFetch(url.clone()));
+        },
+    };
+
+    if !response.status().is_success() {
+        error!("{}", Error::HttpError(response.status()));
+        return Err(Error::HttpError(response.status()));
+    }
+
+    match response.text().await {
+        Ok(ok) => Ok(ok),
+        Err(_) => {
+            error!("{}", Error::ConvertText(id.clone()));
+            Err(Error::ConvertText(id.clone()))
+        }
+    }
 }
 
-// TODO: what happen if it failed? should i note that it failed? drop the scholar?
-async fn fetch_publication(id: &String, start_at: usize) -> Result<String, reqwest::Error> {
+async fn fetch_publication(id: &String, start_at: usize) -> Result<String> {
     let mut form = HashMap::new();
     form.insert("json", "1");
 
@@ -222,16 +245,43 @@ async fn fetch_publication(id: &String, start_at: usize) -> Result<String, reqwe
         "https://scholar.google.com/citations?user={id}&hl=en&cstart={start_at}&pagesize=100"
     );
     let client = Client::new();
-    let request = client.post(url).form(&form);
-    let response = request.send().await?.text().await?;
+    let request = client.post(&url).form(&form);
+    let response = match request.send().await {
+        Ok(ok) => ok,
+        Err(_) => {
+            error!("{}", Error::FailedFetch(url.clone()));
+            return Err(Error::FailedFetch(url.clone()));
+        }
+    };
 
-    let parsed: Value =
-        serde_json::from_str(&response).expect("fetch_publication: Failed to parse response");
+    if !response.status().is_success() {
+        error!("{}", Error::HttpError(response.status()));
+        return Err(Error::HttpError(response.status()));
+    }
+    
+    let response = match response.text().await {
+        Ok(ok) => ok,
+        Err(_) => {
+            error!("{}", Error::ConvertText(id.clone()));
+            return Err(Error::ConvertText(id.clone()));
+        }
+    };
+
+    let parsed: Value = match serde_json::from_str(&response) {
+        Ok(ok) => ok,
+        Err(_) => {
+            error!("{}", Error::ConvertJson);
+            return Err(Error::ConvertJson);
+        }
+    };
 
     let b = parsed
         .get("B")
         .and_then(|v| v.as_str())
-        .expect("fetch_publication: Failed to parse response");
+        .ok_or_else(|| {
+            error!("{}", Error::ReadJson);
+            Error::ReadJson
+        })?;
 
     Ok(b.to_string())
 }
