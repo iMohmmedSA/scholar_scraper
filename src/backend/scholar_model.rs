@@ -1,23 +1,25 @@
+use serde::Serialize;
 
 
 
-#[derive(Debug)]
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Scholar {
-    google_id: String,
-    name: String,
-    affiliation: String,
-    document_count: usize,
+    pub google_id: String,
+    pub name: String,
+    pub affiliation: String,
+    pub document_count: usize,
     
-    cited_by: String,
-    cited_5_years: String,
+    pub cited_by: String,
+    pub cited_5_years: String,
     
-    h_index: String,
-    h_index_5_years: String,
+    pub h_index: String,
+    pub h_index_5_years: String,
     
-    i10_index: String,
-    i10_index_5_years: String,
+    pub i10_index: String,
+    pub i10_index_5_years: String,
 
-    publication: Vec<Publication>
+    pub publication: Vec<Publication>
 }
 
 impl Scholar {
@@ -39,7 +41,7 @@ impl Scholar {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Publication {
     pub title: String,
     pub journal: String,

@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use tokio::task::{self, JoinHandle};
 use tracing::{info, error};
 
+use crate::backend::csv::export::export_data;
 use crate::prelude::*;
 
 use crate::backend::scholar_model::Scholar;
@@ -43,6 +44,9 @@ pub async fn process(app: &mut App) {
     for task in tasks {
         let _ = task.await;
     }
+
+    let scholars: Vec<Scholar> = app.scholars.lock().await.iter().cloned().collect();
+    export_data(scholars).await;
 
     println!("Scholar List: {:?}", app.scholars.lock().await.len())
 }

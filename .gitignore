@@ -1,2 +1,4 @@
 target/
 logs/
+
+scholar_data_*.csv
