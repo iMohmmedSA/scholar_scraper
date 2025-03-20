@@ -12,7 +12,7 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
-        let pre_scholars = csv_load().expect("Make sure the file exist");
+        let pre_scholars = csv_load().expect("Make sure authorlist.csv exist, with 'google_id' as header");
 
         Self {
             pre_scholars,
